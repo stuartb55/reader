@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Reader</title>
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>Reader <span id="count" class="count"></span></h1>
+  <div class="controls">
+    <select id="feed" aria-label="Feed"></select>
+    <div class="seg" role="group" aria-label="Show">
+      <button id="show-unread" class="on" type="button">Unread</button>
+      <button id="show-all" type="button">All</button>
+    </div>
+    <button id="refresh" type="button" title="Refresh">Refresh</button>
+    <button id="mark-all" type="button">Mark all read</button>
+  </div>
+</header>
+<main>
+  <div id="grid" class="grid"></div>
+  <p id="status" class="status" role="status"></p>
+  <div id="sentinel"></div>
+</main>
+<dialog id="article">
+  <article>
+    <div class="bar">
+      <span id="a-meta" class="meta"></span>
+      <span class="spacer"></span>
+      <button id="a-star" type="button">☆ Star</button>
+      <button id="a-unread" type="button">Keep unread</button>
+      <button id="a-close" type="button" aria-label="Close">✕</button>
+    </div>
+    <h2 id="a-title"></h2>
+    <div id="a-body" class="body"></div>
+    <p><a id="a-link" target="_blank" rel="noopener noreferrer">Open original ↗</a></p>
+  </article>
+</dialog>
+<script src="/app.js"></script>
+</body>
+</html>
