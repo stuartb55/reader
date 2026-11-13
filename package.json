@@ -1,0 +1,17 @@
+{
+  "name": "reader",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Card-view reader for FreshRSS",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "linkedom": "^0.18.15"
+  }
+}

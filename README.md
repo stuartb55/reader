@@ -1,8 +1,7 @@
 # Reader
 
-A card-view reader for [FreshRSS](https://github.com/FreshRSS/FreshRSS). A small Node server (no
-dependencies) holds the FreshRSS API credentials and serves a single page that lists items as cards,
-opens them in a reading panel, and syncs read and starred state back to FreshRSS.
+A card-view reader for [FreshRSS](https://github.com/FreshRSS/FreshRSS). A small Node server holds the FreshRSS API credentials and serves a single page that lists items as cards,
+opens them in a reading panel with the full article text fetched from the source site, and syncs read and starred state back to FreshRSS.
 
 ## Configuration
 
@@ -33,7 +32,9 @@ http://localhost:8080.
 
 ## Layout
 
-- `server.js`: static files plus `/api/feeds`, `/api/items`, `/api/tag`, `/api/mark-all-read`,
+- `server.js`: static files plus `/api/feeds`, `/api/items`, `/api/article`, `/api/tag`, `/api/mark-all-read`,
   which translate to FreshRSS's Google Reader API.
+- `extract.js`: fetches an item's page and reduces it to article text and images (Mozilla
+  Readability on linkedom). The page asks by item id, so only links from subscribed feeds are fetched.
 - `public/`: the page. Feed HTML is untrusted, so `app.js` rebuilds it from an allowlist and the
   server sends a strict Content-Security-Policy.

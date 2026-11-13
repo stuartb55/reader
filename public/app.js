@@ -135,15 +135,37 @@ function clean(node, out) {
   }
 }
 
+function render(html, leadImage) {
+  const body = $('a-body');
+  body.replaceChildren();
+  if (leadImage) body.append(el('img', { src: leadImage, alt: '', referrerPolicy: 'no-referrer' }));
+  clean(new DOMParser().parseFromString(html, 'text/html').body, body);
+}
+
+// Show the feed's summary straight away, then swap in the full article text.
+async function loadFull(item) {
+  const note = $('a-note');
+  const still = () => state.open === item && dialog.open;
+  if (!item.url) { note.textContent = ''; return; }
+  note.textContent = 'Loading full article…';
+  try {
+    item.full ??= await api(`/api/article?id=${encodeURIComponent(item.id)}`);
+    if (!still()) return;
+    render(item.full.html, item.full.leadImage);
+    note.textContent = `${Math.max(1, Math.round(item.full.words / 230))} min read`;
+  } catch (err) {
+    if (still()) note.textContent = `Showing the feed summary: ${err.message}.`;
+  }
+}
+
 function openItem(id) {
   const item = state.items.get(id);
   if (!item) return;
   state.open = item;
   $('a-meta').textContent = [item.feed, item.author, new Date(item.published * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })].filter(Boolean).join(' · ');
   $('a-title').textContent = item.title;
-  const body = $('a-body');
-  body.replaceChildren();
-  clean(new DOMParser().parseFromString(item.html, 'text/html').body, body);
+  render(item.html);
+  loadFull(item);
   const link = $('a-link');
   link.hidden = !item.url;
   if (item.url) link.href = item.url;

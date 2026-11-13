@@ -4,6 +4,7 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const { fetchPage, extract } = require('./extract');
 
 const BASE = (process.env.FRESHRSS_URL || 'http://freshrss').replace(/\/$/, '') + '/api/greader.php';
 const USER = process.env.FRESHRSS_USER;
@@ -98,6 +99,24 @@ function toCard(item) {
   };
 }
 
+// The page asks by item id, never by URL, so this only ever fetches links that
+// came from a subscribed feed.
+const articles = new Map(); // item id -> extracted article, oldest first
+
+async function article(id) {
+  if (articles.has(id)) return articles.get(id);
+  const body = new URLSearchParams({ i: id, output: 'json' });
+  const data = await (await greader('stream/items/contents', { body })).json();
+  const item = data.items?.[0];
+  const url = httpsOnly(item?.canonical?.[0]?.href || item?.alternate?.[0]?.href);
+  if (!url) throw Object.assign(new Error('this item has no link'), { status: 404 });
+  const page = await fetchPage(url);
+  const result = extract(page.html, page.url);
+  articles.set(id, result);
+  if (articles.size > 200) articles.delete(articles.keys().next().value);
+  return result;
+}
+
 const STREAM = /^(reading-list|starred|feed\/\d+|user\/-\/label\/[^?#]{1,200})$/;
 function streamPath(s) {
   if (!STREAM.test(s)) throw Object.assign(new Error('bad stream'), { status: 400 });
@@ -133,6 +152,11 @@ const routes = {
       await greader(`stream/contents/${streamPath(q.get('stream') || 'reading-list')}`, { params })
     ).json();
     return { items: (data.items || []).map(toCard), continuation: data.continuation || null };
+  },
+  'GET /api/article': async (q) => {
+    const id = q.get('id') || '';
+    if (!/^[\w:.,/-]{1,120}$/.test(id)) throw Object.assign(new Error('bad id'), { status: 400 });
+    return article(id);
   },
   'POST /api/tag': async (_q, body) => {
     const ids = Array.isArray(body.ids) ? body.ids.filter((i) => typeof i === 'string').slice(0, 500) : [];
