@@ -6,6 +6,14 @@
 <meta name="color-scheme" content="light dark">
 <title>Reader</title>
 <link rel="icon" href="/icon.svg">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#f4f2ee" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#151413" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Reader">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -17,7 +25,7 @@
       <button id="show-unread" class="on" type="button">Unread</button>
       <button id="show-all" type="button">All</button>
     </div>
-    <button id="refresh" type="button" title="Refresh">Refresh</button>
+    <button id="refresh" type="button" title="Refresh" aria-label="Refresh">↻</button>
     <button id="mark-all" type="button">Mark all read</button>
   </div>
 </header>

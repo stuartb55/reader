@@ -225,4 +225,13 @@ $('mark-all').addEventListener('click', async () => {
   }
 });
 new IntersectionObserver((entries) => { if (entries[0].isIntersecting) loadMore(); }, { rootMargin: '800px' }).observe($('sentinel'));
+
+// An installed app can sit in the background for hours: reload when it comes
+// back, unless the reader is part-way down the list or in an article.
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) hiddenAt = Date.now();
+  else if (hiddenAt && Date.now() - hiddenAt > 10 * 60 * 1000 && !dialog.open && scrollY < 200) reset();
+});
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 reset();

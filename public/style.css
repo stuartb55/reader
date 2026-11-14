@@ -12,6 +12,12 @@ header {
   padding: 10px max(16px, env(safe-area-inset-left)); background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: blur(10px); border-bottom: 1px solid var(--line);
 }
+/* Installed app: no browser chrome, so keep clear of the notch and home bar. */
+@media (display-mode: standalone) {
+  header { padding-top: max(10px, env(safe-area-inset-top)); }
+  main { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+  body { overscroll-behavior-y: contain; }
+}
 h1 { margin: 0; font-size: 1.15rem; flex: 1 1 auto; white-space: nowrap; }
 .count { color: var(--muted); font-weight: 500; font-size: .9rem; margin-left: 4px; }
 .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -61,6 +67,5 @@ dialog h2 { margin: 4px 0 14px; font-size: 1.5rem; line-height: 1.25; text-wrap:
 a { color: var(--accent); }
 @media (max-width: 560px) {
   main { padding: 12px; }
-  #refresh { display: none; }
   dialog article { padding: 0 16px 18px; }
 }
