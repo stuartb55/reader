@@ -19,36 +19,64 @@
 <body>
 <header>
   <h1>Reader <span id="count" class="count"></span></h1>
-  <div class="controls">
-    <select id="feed" aria-label="Feed"><option value="reading-list">All feeds</option></select>
-    <div class="seg" role="group" aria-label="Show">
-      <button id="show-unread" class="on" type="button">Unread</button>
-      <button id="show-all" type="button">All</button>
-    </div>
-    <button id="refresh" type="button" title="Refresh" aria-label="Refresh">↻</button>
-    <button id="mark-all" type="button" title="Mark all read" aria-label="Mark all read"><span aria-hidden="true">✓</span><span class="label"> Mark all read</span></button>
+  <div class="seg" role="group" aria-label="Show">
+    <button id="show-unread" class="on" type="button" aria-pressed="true">Unread</button>
+    <button id="show-all" type="button" aria-pressed="false">Read too</button>
   </div>
+  <div class="actions">
+    <button id="view" class="icon" type="button" title="Compact list" aria-label="Compact list" aria-pressed="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <button id="refresh" class="icon" type="button" title="Refresh" aria-label="Refresh">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5"/></svg>
+    </button>
+    <button id="mark-all" class="icon" type="button" title="Mark all as read" aria-label="Mark all as read">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 13l4 4 8-9M11 16l1.5 1.5L21 8"/></svg>
+      <span class="label">Mark all read</span>
+    </button>
+  </div>
+  <nav id="feeds" class="chips" aria-label="Feeds">
+    <button class="chip on" type="button" data-stream="reading-list">All feeds</button>
+  </nav>
 </header>
 <main>
   <div id="grid" class="grid"></div>
   <p id="status" class="status" role="status"></p>
   <div id="sentinel"></div>
 </main>
-<dialog id="article">
-  <article>
-    <div class="bar">
-      <span id="a-meta" class="meta"></span>
-      <span class="spacer"></span>
-      <button id="a-star" type="button">☆ Star</button>
-      <button id="a-unread" type="button">Keep unread</button>
-      <button id="a-close" type="button" aria-label="Close">✕</button>
-    </div>
+
+<dialog id="article" aria-labelledby="a-title">
+  <div class="bar">
+    <button id="a-close" class="icon" type="button" aria-label="Back to the list">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+    </button>
+    <span class="spacer"></span>
+    <button id="a-size" class="icon" type="button" aria-label="Change text size">Aa</button>
+    <button id="a-star" class="icon" type="button" aria-label="Star" aria-pressed="false">☆</button>
+    <button id="a-unread" type="button">Keep unread</button>
+  </div>
+  <article id="a-scroll">
     <h2 id="a-title"></h2>
+    <p id="a-meta" class="meta"></p>
     <p id="a-note" class="meta" role="status"></p>
     <div id="a-body" class="body"></div>
-    <p><a id="a-link" target="_blank" rel="noopener noreferrer">View on the original site ↗</a></p>
+    <p class="source"><a id="a-link" target="_blank" rel="noopener noreferrer">View on the original site ↗</a></p>
   </article>
+  <div class="nav">
+    <button id="a-prev" type="button">‹ Previous</button>
+    <button id="a-next" type="button">Next ›</button>
+  </div>
 </dialog>
+
+<dialog id="confirm" aria-labelledby="c-text">
+  <p id="c-text"></p>
+  <div class="row">
+    <button id="c-cancel" type="button">Cancel</button>
+    <button id="c-ok" class="primary" type="button">Mark all read</button>
+  </div>
+</dialog>
+
+<div id="toast" class="toast" role="status" hidden><span id="toast-text"></span><button id="toast-action" type="button"></button></div>
 <script src="/app.js"></script>
 </body>
 </html>

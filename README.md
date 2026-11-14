@@ -1,6 +1,7 @@
 # Reader
 
 A card-view reader for [FreshRSS](https://github.com/FreshRSS/FreshRSS). A small Node server holds the FreshRSS API credentials and serves a single page that lists items as cards,
+(or a compact headline list), lets you tick or swipe them away as read,
 opens them in a reading panel with the full article text fetched from the source site, and syncs read and starred state back to FreshRSS.
 
 The page is an installable web app (manifest, icons and a service worker that keeps the shell
