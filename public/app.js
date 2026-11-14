@@ -29,7 +29,8 @@ function card(item) {
   c.dataset.id = item.id;
   if (item.image) {
     const img = el('img', { src: item.image, alt: '', loading: 'lazy', referrerPolicy: 'no-referrer' });
-    img.addEventListener('error', () => img.remove());
+    img.addEventListener('error', () => (img.src !== item.image ? (img.src = item.image) : img.remove()));
+    img.addEventListener('load', () => sharpen(item, img));
     c.append(img);
   }
   const meta = el('span', { className: 'meta' }, `${item.feed} · ${ago(item.published)}`);
@@ -37,6 +38,23 @@ function card(item) {
   c.append(el('div', { className: 'inner' }, meta, el('h3', {}, item.title), el('p', {}, item.snippet)));
   c.addEventListener('click', () => openItem(item.id));
   return c;
+}
+
+// Some feeds only supply a tiny thumbnail; swap in the article's own lead image.
+function sharpen(item, img) {
+  if (item.sharp || img.naturalWidth >= 480) return;
+  item.sharp = true;
+  api(`/api/thumb?id=${encodeURIComponent(item.id)}`).then((r) => {
+    if (!r.image || r.image === item.image) return;
+    const probe = new Image();
+    probe.referrerPolicy = 'no-referrer';
+    probe.onload = () => {
+      if (probe.naturalWidth <= img.naturalWidth) return;
+      item.image = r.image;
+      img.src = r.image;
+    };
+    probe.src = r.image;
+  }).catch(() => {});
 }
 
 async function loadFeeds() {

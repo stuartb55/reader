@@ -76,7 +76,10 @@ function extract(html, url) {
     content = markedHtml;
     text = markedText;
   }
-  if (!content || text.length < 400) throw new Error('no article text could be found on the page');
+  const image = absolute(lead || '', url);
+  if (!content || text.length < 400) {
+    throw Object.assign(new Error('no article text could be found on the page'), { image });
+  }
   const { document: out } = parseHTML(`<!doctype html><html><body>${content}</body></html>`);
   for (const el of out.querySelectorAll('img')) {
     const src = absolute(el.getAttribute('src') || '', url);
@@ -91,7 +94,8 @@ function extract(html, url) {
   return {
     html: out.body.innerHTML,
     byline: (parsed?.byline || '').replace(/\s+/g, ' ').trim().slice(0, 120),
-    leadImage: out.querySelector('img') ? null : absolute(lead || '', url),
+    image,
+    leadImage: out.querySelector('img') ? null : image,
     words: text.split(' ').length,
   };
 }

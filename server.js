@@ -103,20 +103,42 @@ function toCard(item) {
 // came from a subscribed feed.
 const articles = new Map(); // item id -> extracted article, oldest first
 
-async function article(id) {
+function article(id) {
   if (articles.has(id)) return articles.get(id);
-  const body = new URLSearchParams({ i: id, output: 'json' });
-  const data = await (await greader('stream/items/contents', { body })).json();
-  const item = data.items?.[0];
-  const url = httpsOnly(item?.canonical?.[0]?.href || item?.alternate?.[0]?.href);
-  if (!url) throw Object.assign(new Error('this item has no link'), { status: 404 });
-  const page = await fetchPage(url);
-  const result = extract(page.html, page.url);
-  articles.set(id, result);
-  if (articles.size > 200) articles.delete(articles.keys().next().value);
-  return result;
+  // Cache the promise so a card's image lookup and opening the article share one fetch.
+  const pending = queue(async () => {
+    const body = new URLSearchParams({ i: id, output: 'json' });
+    const data = await (await greader('stream/items/contents', { body })).json();
+    const item = data.items?.[0];
+    const url = httpsOnly(item?.canonical?.[0]?.href || item?.alternate?.[0]?.href);
+    if (!url) throw Object.assign(new Error('this item has no link'), { status: 404 });
+    const page = await fetchPage(url);
+    return extract(page.html, page.url);
+  });
+  articles.set(id, pending);
+  if (articles.size > 600) articles.delete(articles.keys().next().value);
+  // Network failures may be temporary; a page with no article text will not change.
+  pending.catch((err) => 'image' in err || articles.delete(id));
+  return pending;
 }
 
+// At most four source pages are fetched at a time.
+let running = 0;
+const waiting = [];
+function queue(task) {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      running++;
+      task().then(resolve, reject).finally(() => {
+        running--;
+        waiting.shift()?.();
+      });
+    };
+    running < 4 ? run() : waiting.push(run);
+  });
+}
+
+const ITEM_ID = /^[\w:.,/-]{1,120}$/;
 const STREAM = /^(reading-list|starred|feed\/\d+|user\/-\/label\/[^?#]{1,200})$/;
 function streamPath(s) {
   if (!STREAM.test(s)) throw Object.assign(new Error('bad stream'), { status: 400 });
@@ -155,8 +177,14 @@ const routes = {
   },
   'GET /api/article': async (q) => {
     const id = q.get('id') || '';
-    if (!/^[\w:.,/-]{1,120}$/.test(id)) throw Object.assign(new Error('bad id'), { status: 400 });
+    if (!ITEM_ID.test(id)) throw Object.assign(new Error('bad id'), { status: 400 });
     return article(id);
+  },
+  // A sharper card image, for feeds that only supply a small thumbnail.
+  'GET /api/thumb': async (q) => {
+    const id = q.get('id') || '';
+    if (!ITEM_ID.test(id)) throw Object.assign(new Error('bad id'), { status: 400 });
+    return { image: await article(id).then((a) => a.image, (err) => err.image || null) };
   },
   'POST /api/tag': async (_q, body) => {
     const ids = Array.isArray(body.ids) ? body.ids.filter((i) => typeof i === 'string').slice(0, 500) : [];
