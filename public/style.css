@@ -68,5 +68,11 @@ dialog h2 { margin: 4px 0 14px; font-size: 1.5rem; line-height: 1.25; text-wrap:
 a { color: var(--accent); }
 @media (max-width: 560px) {
   main { padding: 12px; }
+  /* One row: the feed picker takes the spare width and Mark all read becomes an icon. */
+  .controls { flex: 1 1 100%; flex-wrap: nowrap; min-width: 0; }
+  .controls select { flex: 1 1 0; width: auto; min-width: 0; }
+  .controls button { padding: 6px 10px; flex: none; }
+  #mark-all .label { display: none; }
+  #mark-all, #refresh { min-width: 40px; }
   dialog article { padding: 0 16px 18px; }
 }
