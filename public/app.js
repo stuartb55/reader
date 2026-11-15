@@ -1,60 +1,142 @@
-'use strict';
+import { api, explain, unreachable } from './modules/api.js';
+import { prefs } from './modules/prefs.js';
+import * as db from './modules/db.js';
+import { clean } from './modules/sanitize.js';
+import { el, ago, shortName, groupChanges } from './modules/util.js';
+
 const $ = (id) => document.getElementById(id);
-const grid = $('grid'), statusEl = $('status'), feedsEl = $('feeds'), dialog = $('article');
-const store = {
-  get(key, fallback) { try { const v = localStorage.getItem(key); return v === null ? fallback : JSON.parse(v); } catch { return fallback; } },
-  set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private mode */ } },
-};
+const grid = $('grid'), statusEl = $('status'), dialog = $('article');
+const STREAM = /^(reading-list|starred|feed\/\d+|user\/-\/label\/.+)$/;
+const query = new URLSearchParams(location.search);
+const startStream = [query.get('s'), prefs.get('stream', '')].find((s) => s && STREAM.test(s)) || 'reading-list';
+const saved = prefs.get('feeds', null);
+
 const state = {
-  stream: 'reading-list', unread: true, continuation: null, loading: null, done: false, gen: 0,
-  items: new Map(), open: null, total: null, feeds: [],
+  stream: startStream,
+  // The top-row chip that is selected; a feed is picked inside it.
+  scope: startStream.startsWith('feed/') ? prefs.get('scope', 'reading-list') : startStream,
+  unread: query.has('show') ? query.get('show') !== 'all' : prefs.get('unread', true),
+  order: prefs.get('order', 'newest'),
+  continuation: null, loading: null, done: false, gen: 0,
+  items: new Map(), open: null,
+  total: saved?.total ?? null, feeds: saved?.feeds ?? [], categories: saved?.categories ?? [],
+  // Set while the list on screen is a saved copy, with when it was saved.
+  offline: null, pending: 0,
   // Feeds whose own thumbnails are too small to show; remembered so cards never flash a blurry one.
-  lowres: new Set(store.get('lowres', [])),
+  lowres: new Set(prefs.get('lowres', [])),
 };
 const CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>';
 const UNDO = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3"/></svg>';
-
-async function api(path, body) {
-  const res = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
-  return data;
-}
-const explain = (err) => (err instanceof TypeError ? 'you appear to be offline, or the server can’t be reached' : err.message);
-
-function el(tag, props = {}, ...children) {
-  const n = Object.assign(document.createElement(tag), props);
-  n.append(...children);
-  return n;
-}
-
-function ago(sec) {
-  const d = Math.max(0, Date.now() / 1000 - sec);
-  if (d < 3600) return `${Math.max(1, Math.round(d / 60))}m ago`;
-  if (d < 86400) return `${Math.round(d / 3600)}h ago`;
-  if (d < 7 * 86400) return `${Math.round(d / 86400)}d ago`;
-  return new Date(sec * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-}
-
-// "Articles | Mail Online" -> "Mail Online"; "The Register: Biting the hand…" -> "The Register".
-const GENERIC = /^(news|articles?|home|latest|rss|feed|top stories)$/i;
-function shortName(title) {
-  const parts = title.split(/\s+[|–—-]\s+|:\s+/).map((p) => p.trim()).filter(Boolean);
-  return parts.find((p) => !GENERIC.test(p)) || title;
-}
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 // ---- Toast -----------------------------------------------------------------
 let toastTimer;
-function toast(text, actionLabel, action) {
+function toast(text, actionLabel, action, ms) {
   const box = $('toast'), btn = $('toast-action');
   $('toast-text').textContent = text;
   btn.textContent = actionLabel || '';
   btn.onclick = action ? () => { box.hidden = true; action(); } : null;
-  // Sit above whichever dialog is open.
-  (document.querySelector('dialog[open]') || document.body).append(box);
+  // Sit above whichever dialog is on top.
+  ([...document.querySelectorAll('dialog[open]')].pop() || document.body).append(box);
   box.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { box.hidden = true; }, action ? 7000 : 4500);
+  toastTimer = setTimeout(() => { box.hidden = true; }, ms || (action ? 7000 : 4500));
+}
+
+// ---- Offline copy and queued changes ----------------------------------------
+const listKey = () => `${state.stream}|${state.unread ? 1 : 0}|${state.order}`;
+
+function showBanner() {
+  const parts = [];
+  if (state.offline) {
+    const at = new Date(state.offline.at).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+    parts.push(`Showing items saved ${at}: ${state.offline.why}.`);
+  }
+  if (state.pending) parts.push(`${plural(state.pending, 'change')} will sync when FreshRSS is reachable again.`);
+  $('banner').textContent = parts.join(' ');
+  $('banner').hidden = !parts.length;
+}
+
+// Keep a copy of what is on screen so it can be shown without a connection.
+let saveTimer;
+function saveListSoon() {
+  if (state.offline) return;
+  clearTimeout(saveTimer);
+  const key = listKey(), hideRead = state.unread && state.stream !== 'starred';
+  saveTimer = setTimeout(() => {
+    const items = [...state.items.values()]
+      .filter((i) => !(hideRead && i.read))
+      .slice(0, 150)
+      .map(({ sharp: _sharp, full: _full, ...plain }) => plain);
+    db.putList(key, items).catch(() => {});
+  }, 800);
+}
+
+async function showSaved(err) {
+  const [list, waiting] = await Promise.all([db.getList(listKey()), db.outbox()]).catch(() => []);
+  if (!list?.items.length) return false;
+  const byId = new Map(list.items.map((i) => [i.id, i]));
+  for (const change of waiting || []) if (byId.has(change.id)) byId.get(change.id)[change.tag] = change.on;
+  const hideRead = state.unread && state.stream !== 'starred';
+  for (const item of list.items) {
+    if (hideRead && item.read) continue;
+    state.items.set(item.id, item);
+    grid.append(card(item));
+  }
+  state.done = true;
+  state.offline = { at: list.at, why: explain(err) };
+  statusEl.textContent = state.items.size ? '' : 'Nothing unread in the saved copy.';
+  showBanner();
+  return true;
+}
+
+// Send changes made while FreshRSS could not be reached. Resolves to how many
+// were sent, or -1 if it still cannot be reached.
+let flushing = null;
+function flush() {
+  flushing ??= (async () => {
+    const entries = await db.outbox().catch(() => []);
+    try {
+      for (const group of groupChanges(entries)) {
+        for (let i = 0; i < group.ids.length; i += 500) {
+          await api('/api/tag', { ids: group.ids.slice(i, i + 500), tag: group.tag, on: group.on });
+        }
+      }
+    } catch (err) {
+      if (unreachable(err)) return -1;
+      // FreshRSS answered and refused: drop the changes instead of retrying forever.
+      toast(`Some saved changes could not be applied: ${explain(err)}.`);
+    }
+    await db.clearOutbox(entries.map((e) => e.key)).catch(() => {});
+    state.pending = 0;
+    return entries.length;
+  })().finally(() => { flushing = null; });
+  return flushing;
+}
+
+async function sync() {
+  if (!state.pending && !state.offline) return;
+  // With nothing to send, ask the server whether FreshRSS is back before reloading the list.
+  const sent = state.pending ? await flush() : await api('/api/status').then(() => 0, (err) => (unreachable(err) ? -1 : 0));
+  showBanner();
+  if (sent > 0) toast(`${plural(sent, 'change')} synced`);
+  if (sent >= 0 && (sent > 0 || state.offline)) reset();
+}
+
+// Fetch article text ahead of time so the first screen of items can be read offline.
+let prefetching = 0;
+async function prefetch(items) {
+  if (!prefs.get('offlineArticles', true) || navigator.connection?.saveData || !navigator.onLine) return;
+  const mine = ++prefetching;
+  for (const item of items) {
+    if (mine !== prefetching) return;
+    if (!item.url || item.read || item.full) continue;
+    try {
+      await fullText(item);
+    } catch (err) {
+      if (unreachable(err)) return;
+    }
+  }
 }
 
 // ---- Card images -----------------------------------------------------------
@@ -86,7 +168,7 @@ function cardImage(item) {
     img.addEventListener('load', async () => {
       if (img.naturalWidth >= 480 || img.dataset.fallback) return;
       state.lowres.add(item.feedId);
-      store.set('lowres', [...state.lowres]);
+      prefs.set('lowres', [...state.lowres]);
       const better = await sharpImage(item);
       if (better && better !== item.image && img.isConnected) img.src = better;
     }, { once: true });
@@ -98,7 +180,7 @@ function cardImage(item) {
 function swipeable(node, commit, { drag = true } = {}) {
   let id = null, x0 = 0, y0 = 0, dx = 0, active = false;
   node.addEventListener('pointerdown', (e) => {
-    if (e.pointerType === 'mouse' || e.target.closest('pre, table')) return;
+    if (e.pointerType === 'mouse' || e.target.closest('pre, table, audio')) return;
     id = e.pointerId; x0 = e.clientX; y0 = e.clientY; dx = 0; active = false;
   });
   node.addEventListener('pointermove', (e) => {
@@ -137,21 +219,31 @@ function card(item) {
   const open = el('button', { type: 'button', className: 'open' });
   if (item.image) open.append(cardImage(item));
   const meta = el('span', { className: 'meta' }, `${shortName(item.feed)} · ${ago(item.published)}`);
-  if (item.starred) meta.prepend(el('span', { className: 'star', title: 'Starred' }, '★ '));
   open.append(el('div', { className: 'inner' }, meta, el('h3', {}, item.title), el('p', {}, item.snippet)));
   open.addEventListener('click', () => { if (!c.dataset.swiped) openItem(item.id); });
   const label = item.read ? 'Mark as unread' : 'Mark as read';
   const done = el('button', { type: 'button', className: 'done', title: label, innerHTML: item.read ? UNDO : CHECK });
   done.setAttribute('aria-label', `${label}: ${item.title}`);
   done.addEventListener('click', () => dismiss(item));
+  const starLabel = item.starred ? 'Remove star' : 'Star';
+  const fav = el('button', { type: 'button', className: 'fav' + (item.starred ? ' on' : ''), title: starLabel }, item.starred ? '★' : '☆');
+  fav.setAttribute('aria-label', `${starLabel}: ${item.title}`);
+  fav.setAttribute('aria-pressed', String(item.starred));
+  fav.addEventListener('click', () => setTag(item, 'starred', !item.starred));
   swipeable(c, () => dismiss(item));
-  c.append(open, done);
+  c.append(open, fav, done);
   return c;
 }
 
 const cardFor = (item) => grid.querySelector(`[data-id="${CSS.escape(item.id)}"]`);
 function paint(item) {
-  cardFor(item)?.replaceWith(card(item));
+  const old = cardFor(item);
+  if (!old) return;
+  // Keep the keyboard's place: redrawing would otherwise drop the focus.
+  const focused = [...old.children].indexOf(document.activeElement);
+  const fresh = card(item);
+  old.replaceWith(fresh);
+  if (focused !== -1) fresh.children[focused]?.focus();
 }
 
 let countsTimer;
@@ -165,8 +257,16 @@ async function setTag(item, tag, on) {
       clearTimeout(countsTimer);
       countsTimer = setTimeout(() => loadFeeds().catch(() => {}), 700);
     }
+    saveListSoon();
     return true;
   } catch (err) {
+    // No connection: keep the change and send it later.
+    const queued = unreachable(err) && (await db.queue({ id: item.id, tag, on }).then(() => true, () => false));
+    if (queued) {
+      state.pending++;
+      showBanner();
+      return true;
+    }
     item[tag] = before;
     paint(item);
     toast(`Couldn’t update that item: ${explain(err)}.`);
@@ -178,7 +278,9 @@ async function setTag(item, tag, on) {
 async function dismiss(item) {
   if (item.read) return setTag(item, 'read', false);
   const clears = state.unread && state.stream !== 'starred';
-  const next = cardFor(item)?.nextElementSibling;
+  const old = cardFor(item);
+  const next = old?.nextElementSibling;
+  if (clears && old?.contains(document.activeElement)) (next || old.previousElementSibling)?.querySelector('.open')?.focus();
   const saving = setTag(item, 'read', true);
   // setTag has already redrawn the card as read; fade that one out.
   const c = clears && cardFor(item);
@@ -191,34 +293,64 @@ async function dismiss(item) {
   const restore = () => {
     if (!clears || !state.items.has(item.id) || cardFor(item)) return;
     const again = card(item);
-    next?.isConnected ? next.before(again) : grid.prepend(again);
+    if (next?.isConnected) next.before(again);
+    else grid.prepend(again);
   };
   if (!ok) return restore();
   toast('Marked as read', 'Undo', async () => { await setTag(item, 'read', false); restore(); });
 }
 
 // ---- Feeds -----------------------------------------------------------------
-function chip(stream, label, count) {
-  const b = el('button', { type: 'button', className: 'chip' + (stream === state.stream ? ' on' : '') }, label);
+const feedById = (id) => state.feeds.find((f) => f.id === id);
+function streamName(stream) {
+  if (stream === 'reading-list') return 'every feed';
+  const feed = feedById(stream);
+  if (feed) return `“${shortName(feed.title)}”`;
+  const cat = state.categories.find((c) => c.id === stream);
+  return cat ? `the ${cat.label} category` : 'this list';
+}
+function unreadIn(stream) {
+  if (stream === 'reading-list') return state.total;
+  return (feedById(stream) || state.categories.find((c) => c.id === stream))?.unread ?? null;
+}
+
+function select(stream, scope) {
+  if (state.stream === stream) return scrollTo({ top: 0, behavior: 'smooth' });
+  state.stream = stream;
+  state.scope = scope;
+  reset();
+}
+
+function chip(stream, scope, label, count) {
+  const on = stream === state.stream || (stream === state.scope && stream === scope);
+  const b = el('button', { type: 'button', className: 'chip' + (on ? ' on' : '') }, label);
   b.dataset.stream = stream;
-  b.setAttribute('aria-pressed', String(stream === state.stream));
+  b.setAttribute('aria-pressed', String(on));
   if (count) b.append(el('span', { className: 'n' }, String(count)));
-  b.addEventListener('click', () => {
-    if (state.stream === stream) return scrollTo({ top: 0, behavior: 'smooth' });
-    state.stream = stream;
-    reset();
-  });
+  b.addEventListener('click', () => select(stream, scope));
   return b;
 }
 
 function renderFeeds() {
-  const left = feedsEl.scrollLeft;
-  feedsEl.replaceChildren(
-    chip('reading-list', 'All feeds', state.total),
-    ...state.feeds.map((f) => chip(f.id, shortName(f.title), f.unread)),
-    chip('starred', '★ Starred'),
+  const scopes = $('scopes'), feeds = $('feeds');
+  const left = [scopes.scrollLeft, feeds.scrollLeft];
+  // Categories only earn a row when there is more than one of them.
+  const cats = state.categories.length > 1 ? state.categories : [];
+  if (state.scope !== 'reading-list' && state.scope !== 'starred' && !cats.some((c) => c.id === state.scope)) state.scope = 'reading-list';
+  scopes.replaceChildren(
+    chip('reading-list', 'reading-list', 'All feeds', state.total),
+    ...cats.map((c) => chip(c.id, c.id, c.label, c.unread)),
+    chip('starred', 'starred', '★ Starred'),
   );
-  feedsEl.scrollLeft = left;
+  // The feeds inside the chosen category, busiest first; quiet ones stay out of the way.
+  const inside = state.scope === 'starred' ? [] : state.feeds
+    .filter((f) => state.scope === 'reading-list' || f.category === state.scope)
+    .filter((f) => !state.unread || f.unread || f.id === state.stream)
+    .sort((a, b) => b.unread - a.unread || shortName(a.title).localeCompare(shortName(b.title)));
+  feeds.replaceChildren(...inside.map((f) => chip(f.id, state.scope, shortName(f.title), f.unread)));
+  feeds.hidden = !inside.length;
+  scopes.scrollLeft = left[0];
+  feeds.scrollLeft = left[1];
   $('count').textContent = state.total ? `${state.total} unread` : '';
   $('mark-all').hidden = state.stream === 'starred';
 }
@@ -227,6 +359,8 @@ async function loadFeeds() {
   const data = await api('/api/feeds');
   state.total = data.total;
   state.feeds = data.feeds;
+  state.categories = data.categories || [];
+  prefs.set('feeds', data);
   renderFeeds();
   if (navigator.setAppBadge) (data.total ? navigator.setAppBadge(data.total) : navigator.clearAppBadge()).catch(() => {});
   return data.total;
@@ -239,8 +373,10 @@ function loadMore() {
   const gen = state.gen;
   const run = (async () => {
     try {
+      const first = !state.continuation;
       const q = new URLSearchParams({ stream: state.stream, n: '30' });
       if (state.unread && state.stream !== 'starred') q.set('unread', '1');
+      if (state.order === 'oldest') q.set('order', 'oldest');
       if (state.continuation) q.set('c', state.continuation);
       const data = await api(`/api/items?${q}`);
       if (gen !== state.gen) return;
@@ -253,10 +389,15 @@ function loadMore() {
       state.continuation = data.continuation;
       state.done = !data.continuation || !data.items.length;
       statusEl.textContent = state.items.size ? (state.done ? 'That’s everything.' : '') : state.unread ? 'Nothing unread here.' : 'No items.';
+      saveListSoon();
+      if (first) prefetch(data.items);
     } catch (err) {
+      if (gen !== state.gen) return;
+      const usable = unreachable(err) && !state.items.size && (await showSaved(err));
       if (gen !== state.gen) return;
       grid.querySelectorAll('.skeleton').forEach((s) => s.remove());
       state.done = true;
+      if (usable) return;
       const retry = el('button', { type: 'button' }, 'Try again');
       retry.addEventListener('click', () => { state.done = false; statusEl.textContent = 'Loading…'; loadMore(); });
       statusEl.replaceChildren(`Couldn’t load items: ${explain(err)}.`, retry);
@@ -272,50 +413,53 @@ function loadMore() {
   return run;
 }
 
+function remember() {
+  prefs.set('stream', state.stream);
+  prefs.set('scope', state.scope);
+  prefs.set('unread', state.unread);
+  // Keep the address in step so a reload, bookmark or shared link opens the same view.
+  const q = new URLSearchParams();
+  if (state.stream !== 'reading-list') q.set('s', state.stream);
+  if (!state.unread) q.set('show', 'all');
+  history.replaceState(null, '', q.size ? `?${q}` : location.pathname);
+}
+
 function reset() {
   state.gen++;
-  Object.assign(state, { continuation: null, loading: null, done: false });
+  prefetching++;
+  clearTimeout(saveTimer);
+  Object.assign(state, { continuation: null, loading: null, done: false, offline: null });
   state.items.clear();
   statusEl.textContent = '';
+  showBanner();
   grid.replaceChildren(...Array.from({ length: 6 }, () => el('div', { className: 'card skeleton' })));
   scrollTo(0, 0);
+  remember();
   renderFeeds();
   loadMore();
-  loadFeeds().catch((err) => toast(`Couldn’t load your feeds: ${explain(err)}.`));
+  loadFeeds().catch((err) => {
+    // With a saved list on screen the banner already says why.
+    if (!unreachable(err) || !state.feeds.length) toast(`Couldn’t load your feeds: ${explain(err)}.`);
+  });
 }
 
 // ---- Article ---------------------------------------------------------------
-// Feed HTML is untrusted: rebuild it from an allowlist instead of inserting it.
-const ALLOWED = new Set(['P', 'BR', 'A', 'B', 'STRONG', 'I', 'EM', 'U', 'S', 'SUB', 'SUP', 'BLOCKQUOTE', 'PRE', 'CODE', 'UL', 'OL', 'LI',
-  'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'IMG', 'FIGURE', 'FIGCAPTION', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TH', 'TD', 'HR', 'DIV', 'SPAN', 'SMALL', 'TIME', 'DL', 'DT', 'DD']);
-const DROP = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'FORM', 'INPUT', 'BUTTON', 'SVG', 'LINK', 'META', 'NOSCRIPT', 'TEMPLATE']);
-const webUrl = (u) => { try { const p = new URL(u, 'https://invalid.invalid'); return /^https?:$/.test(p.protocol) && p.hostname !== 'invalid.invalid' ? p.href : null; } catch { return null; } };
-
-function clean(node, out) {
-  for (const child of node.childNodes) {
-    if (child.nodeType === Node.TEXT_NODE) { out.append(child.textContent); continue; }
-    if (child.nodeType !== Node.ELEMENT_NODE || DROP.has(child.tagName.toUpperCase())) continue;
-    const tag = child.tagName.toUpperCase();
-    if (!ALLOWED.has(tag)) { clean(child, out); continue; }
-    const n = document.createElement(tag === 'H1' ? 'h3' : tag);
-    if (tag === 'A') {
-      const href = webUrl(child.getAttribute('href'));
-      if (href) Object.assign(n, { href, target: '_blank', rel: 'noopener noreferrer' });
-    } else if (tag === 'IMG') {
-      const src = webUrl(child.getAttribute('src'));
-      if (!src) continue;
-      Object.assign(n, { src, alt: child.getAttribute('alt') || '', loading: 'lazy', referrerPolicy: 'no-referrer' });
-    }
-    clean(child, n);
-    out.append(n);
-  }
-}
-
-function render(html, leadImage) {
+function render(item, html, leadImage) {
   const body = $('a-body');
   body.replaceChildren();
+  if (item.audio) body.append(el('audio', { controls: true, preload: 'none', src: item.audio }));
   if (leadImage) body.append(el('img', { src: leadImage, alt: '', referrerPolicy: 'no-referrer' }));
   clean(new DOMParser().parseFromString(html, 'text/html').body, body);
+}
+
+// The full article text: from this device if it was saved, else from the server.
+async function fullText(item) {
+  if (item.full) return item.full;
+  const kept = await db.getArticle(item.id).catch(() => null);
+  if (kept) return (item.full = kept.full);
+  item.full = await api(`/api/article?id=${encodeURIComponent(item.id)}`);
+  db.putArticle(item.id, item.full).catch(() => {});
+  return item.full;
 }
 
 // Show the feed's summary straight away, then swap in the full article text.
@@ -325,10 +469,10 @@ async function loadFull(item) {
   if (!item.url) { note.textContent = ''; return; }
   note.textContent = 'Loading full article…';
   try {
-    item.full ??= await api(`/api/article?id=${encodeURIComponent(item.id)}`);
+    const full = await fullText(item);
     if (!still()) return;
-    render(item.full.html, item.full.leadImage);
-    note.textContent = `${Math.max(1, Math.round(item.full.words / 230))} min read`;
+    render(item, full.html, full.leadImage);
+    note.textContent = `${Math.max(1, Math.round(full.words / 230))} min read`;
   } catch (err) {
     if (still()) note.textContent = `Showing the feed’s summary: ${explain(err)}.`;
   }
@@ -353,10 +497,11 @@ function openItem(id) {
   state.open = item;
   $('a-meta').textContent = [shortName(item.feed), item.author, new Date(item.published * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })].filter(Boolean).join(' · ');
   $('a-title').textContent = item.title;
-  render(item.html);
+  render(item, item.html);
   const link = $('a-link');
   link.hidden = !item.url;
   if (item.url) link.href = item.url;
+  $('a-share').hidden = !item.url;
   showStar(item);
   if (!dialog.open) dialog.showModal();
   $('a-scroll').scrollTop = 0;
@@ -381,84 +526,192 @@ async function step(dir) {
   else updateNav();
 }
 
+async function toggleStar(item) {
+  await setTag(item, 'starred', !item.starred);
+  if (state.open === item) showStar(item);
+}
+
+async function share(item) {
+  try {
+    if (navigator.share) return await navigator.share({ title: item.title, url: item.url });
+    await navigator.clipboard.writeText(item.url);
+    toast('Link copied');
+  } catch (err) {
+    // Closing the share sheet is not a failure.
+    if (err.name !== 'AbortError') toast('Couldn’t share that link.');
+  }
+}
+
 $('a-close').addEventListener('click', () => dialog.close());
 dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
-dialog.addEventListener('close', () => { state.open = null; });
+dialog.addEventListener('close', () => { state.open = null; $('a-body').replaceChildren(); });
 $('a-prev').addEventListener('click', () => step(-1));
 $('a-next').addEventListener('click', () => step(1));
 swipeable($('a-scroll'), (dx) => step(dx < 0 ? 1 : -1), { drag: false });
 dialog.addEventListener('keydown', (e) => {
-  if (e.altKey || e.ctrlKey || e.metaKey) return;
+  if (e.altKey || e.ctrlKey || e.metaKey || $('options').open) return;
   if (e.key === 'ArrowRight' || e.key === 'j') step(1);
   else if (e.key === 'ArrowLeft' || e.key === 'k') step(-1);
+  else if (e.key === 's') toggleStar(state.open);
 });
-$('a-star').addEventListener('click', async () => {
-  const item = state.open;
-  await setTag(item, 'starred', !item.starred);
-  if (state.open === item) showStar(item);
-});
+$('a-star').addEventListener('click', () => toggleStar(state.open));
+$('a-share').addEventListener('click', () => share(state.open));
 $('a-unread').addEventListener('click', () => { setTag(state.open, 'read', false); dialog.close(); });
-dialog.dataset.size = String(store.get('size', 0));
-$('a-size').addEventListener('click', () => {
-  const size = (Number(dialog.dataset.size) + 1) % 3;
-  dialog.dataset.size = String(size);
-  store.set('size', size);
-});
+
+// ---- Options ---------------------------------------------------------------
+const DEFAULTS = { compact: false, order: 'newest', theme: 'auto', font: 'sans', size: 0, offlineArticles: true };
+const THEME_COLOURS = { light: '#f4f2ee', dark: '#151413' };
+
+function applyOptions() {
+  const get = (key) => prefs.get(key, DEFAULTS[key]);
+  document.body.classList.toggle('compact', get('compact'));
+  dialog.dataset.size = String(get('size'));
+  dialog.dataset.font = get('font');
+  const theme = get('theme');
+  if (theme === 'auto') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+  // The browser's own bars follow the page: one colour when chosen, the system's otherwise.
+  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
+    const system = meta.media.includes('dark') ? 'dark' : 'light';
+    meta.content = THEME_COLOURS[theme === 'auto' ? system : theme];
+  }
+  for (const group of document.querySelectorAll('.seg[data-pref]')) {
+    for (const b of group.children) {
+      const on = JSON.parse(b.dataset.v) === get(group.dataset.pref);
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+    }
+  }
+  if (state.order !== get('order')) {
+    state.order = get('order');
+    reset();
+  }
+}
+for (const group of document.querySelectorAll('.seg[data-pref]')) {
+  group.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    prefs.set(group.dataset.pref, JSON.parse(b.dataset.v));
+    applyOptions();
+  });
+}
+const openOptions = () => $('options').showModal();
+$('options-open').addEventListener('click', openOptions);
+$('a-options').addEventListener('click', openOptions);
+$('o-close').addEventListener('click', () => $('options').close());
+$('options').addEventListener('click', (e) => { if (e.target === $('options')) $('options').close(); });
 
 // ---- Header ----------------------------------------------------------------
+function showFilter() {
+  for (const [id, on] of [['show-unread', state.unread], ['show-all', !state.unread]]) {
+    $(id).classList.toggle('on', on);
+    $(id).setAttribute('aria-pressed', String(on));
+  }
+}
 for (const [id, unread] of [['show-unread', true], ['show-all', false]]) {
   $(id).addEventListener('click', () => {
     if (state.unread === unread) return;
     state.unread = unread;
-    for (const [other, on] of [['show-unread', unread], ['show-all', !unread]]) {
-      $(other).classList.toggle('on', on);
-      $(other).setAttribute('aria-pressed', String(on));
-    }
+    showFilter();
     reset();
   });
 }
 $('refresh').addEventListener('click', reset);
 
-function setCompact(on) {
-  document.body.classList.toggle('compact', on);
-  $('view').setAttribute('aria-pressed', String(on));
-  store.set('compact', on);
-}
-setCompact(store.get('compact', false));
-$('view').addEventListener('click', () => setCompact(!document.body.classList.contains('compact')));
-
 $('mark-all').addEventListener('click', () => {
-  const feed = state.feeds.find((f) => f.id === state.stream);
-  const n = feed ? feed.unread : state.total;
-  if (!n) return toast('Nothing unread here.');
-  const where = feed ? `“${shortName(feed.title)}”` : 'every feed';
-  $('c-text').textContent = `Mark all ${n} unread ${n === 1 ? 'item' : 'items'} in ${where} as read? This includes items you haven’t scrolled to, and can’t be undone.`;
+  const n = unreadIn(state.stream);
+  if (n === 0) return toast('Nothing unread here.');
+  $('c-text').textContent = `Mark unread items in ${streamName(state.stream)} as read? This includes items you haven’t scrolled to.`;
+  $('c-all').textContent = n ? `All ${n} of them` : 'All of them';
+  $('confirm').querySelector('input[value="all"]').checked = true;
   $('confirm').showModal();
 });
 $('c-cancel').addEventListener('click', () => $('confirm').close());
 $('c-ok').addEventListener('click', async () => {
   $('confirm').close();
+  const age = $('confirm').querySelector('input[name="age"]:checked').value;
+  // Only up to now (or the chosen age), so anything fetched after this stays unread.
+  const before = Date.now() - (age === 'all' ? 0 : Number(age) * 86400000);
   try {
-    // Only up to now, so anything fetched after this stays unread.
-    await api('/api/mark-all-read', { stream: state.stream, before: Date.now() });
+    const { ids } = await api('/api/mark-all-read', { stream: state.stream, before });
     reset();
+    if (!ids) return toast('Marked as read');
+    if (!ids.length) return toast('Nothing that old was unread.');
+    toast(`Marked ${plural(ids.length, 'item')} as read`, 'Undo', async () => {
+      try {
+        for (let i = 0; i < ids.length; i += 500) await api('/api/tag', { ids: ids.slice(i, i + 500), tag: 'read', on: false });
+      } catch (err) {
+        toast(`Couldn’t undo all of that: ${explain(err)}.`);
+      }
+      reset();
+    }, 12000);
   } catch (err) {
     toast(`Couldn’t mark them as read: ${explain(err)}.`);
   }
 });
 
+// ---- Keyboard --------------------------------------------------------------
+document.addEventListener('keydown', (e) => {
+  if (e.altKey || e.ctrlKey || e.metaKey || document.querySelector('dialog[open]')) return;
+  if (e.key === '?') return openOptions();
+  if (e.key === 'r') return reset();
+  const cards = [...grid.querySelectorAll('.card[data-id]')];
+  const at = cards.indexOf(document.activeElement?.closest('.card'));
+  if (e.key === 'j' || e.key === 'k') {
+    const next = cards[at === -1 ? 0 : Math.min(cards.length - 1, Math.max(0, at + (e.key === 'j' ? 1 : -1)))];
+    next?.querySelector('.open').focus();
+    next?.scrollIntoView({ block: 'nearest' });
+    return;
+  }
+  const item = at === -1 ? null : state.items.get(cards[at].dataset.id);
+  if (!item) return;
+  if (e.key === 'm') dismiss(item);
+  else if (e.key === 's') setTag(item, 'starred', !item.starred);
+});
+
+// ---- Keeping up to date ----------------------------------------------------
 new IntersectionObserver((entries) => { if (entries[0].isIntersecting) loadMore(); }, { rootMargin: '800px' }).observe($('sentinel'));
 
-// An installed app can sit in the background for hours. Coming back, reload if
-// the reader is at the top; otherwise keep their place and offer the new items.
-let hiddenAt = 0;
-document.addEventListener('visibilitychange', async () => {
-  if (document.hidden) { hiddenAt = Date.now(); return; }
-  if (!hiddenAt || Date.now() - hiddenAt < 5 * 60 * 1000) return;
-  if (!dialog.open && scrollY < 200) return reset();
+// Look for new items without disturbing the reader: reload if they are at the
+// top of the list, otherwise keep their place and offer the new items.
+async function checkForNew() {
+  if (document.hidden || !navigator.onLine) return;
+  if (state.offline || state.pending) return sync();
   const before = state.total;
   const now = await loadFeeds().catch(() => null);
-  if (now !== null && before !== null && now > before) toast(`${now - before} new ${now - before === 1 ? 'item' : 'items'}`, 'Show', () => { dialog.close(); reset(); });
+  if (now === null || before === null || now <= before) return;
+  if (!document.querySelector('dialog[open]') && scrollY < 200) return reset();
+  toast(plural(now - before, 'new item'), 'Show', () => { dialog.close(); reset(); });
+}
+setInterval(checkForNew, 3 * 60 * 1000);
+
+// An installed app can sit in the background for hours.
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  if (state.offline || state.pending) return sync();
+  if (!hiddenAt || Date.now() - hiddenAt < 5 * 60 * 1000) return;
+  if (!dialog.open && scrollY < 200) return reset();
+  checkForNew();
 });
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+addEventListener('online', sync);
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+  let told = false;
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data?.type !== 'updated' || told) return;
+    told = true;
+    toast('A new version of Reader is ready', 'Reload', () => location.reload(), 15000);
+  });
+}
+
+// ---- Start -----------------------------------------------------------------
+showFilter();
+applyOptions();
 reset();
+db.pruneArticles().catch(() => {});
+db.outbox().then(async (entries) => {
+  state.pending = entries.length;
+  if (entries.length) sync();
+}, () => {});

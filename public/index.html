@@ -15,6 +15,7 @@
 <meta name="apple-mobile-web-app-title" content="Reader">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script>
 </head>
 <body>
 <header>
@@ -24,8 +25,8 @@
     <button id="show-all" type="button" aria-pressed="false">Read too</button>
   </div>
   <div class="actions">
-    <button id="view" class="icon" type="button" title="Compact list" aria-label="Compact list" aria-pressed="false">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    <button id="options-open" class="icon" type="button" title="View options" aria-label="View options">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>
     </button>
     <button id="refresh" class="icon" type="button" title="Refresh" aria-label="Refresh">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5"/></svg>
@@ -35,11 +36,13 @@
       <span class="label">Mark all read</span>
     </button>
   </div>
-  <nav id="feeds" class="chips" aria-label="Feeds">
+  <nav id="scopes" class="chips" aria-label="Categories">
     <button class="chip on" type="button" data-stream="reading-list">All feeds</button>
   </nav>
+  <nav id="feeds" class="chips sub" aria-label="Feeds" hidden></nav>
 </header>
 <main>
+  <p id="banner" class="banner" role="status" hidden></p>
   <div id="grid" class="grid"></div>
   <p id="status" class="status" role="status"></p>
   <div id="sentinel"></div>
@@ -51,7 +54,10 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
     </button>
     <span class="spacer"></span>
-    <button id="a-size" class="icon" type="button" aria-label="Change text size">Aa</button>
+    <button id="a-options" class="icon" type="button" aria-label="Reading options">Aa</button>
+    <button id="a-share" class="icon" type="button" aria-label="Share">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3M8 7l4-4 4 4M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>
+    </button>
     <button id="a-star" class="icon" type="button" aria-label="Star" aria-pressed="false">☆</button>
     <button id="a-unread" type="button">Keep unread</button>
   </div>
@@ -70,13 +76,60 @@
 
 <dialog id="confirm" aria-labelledby="c-text">
   <p id="c-text"></p>
+  <fieldset class="choices">
+    <legend class="sr">Which items</legend>
+    <label><input type="radio" name="age" value="all" checked> <span id="c-all">All of them</span></label>
+    <label><input type="radio" name="age" value="1"> Only those that arrived over a day ago</label>
+    <label><input type="radio" name="age" value="7"> Only those that arrived over a week ago</label>
+  </fieldset>
   <div class="row">
     <button id="c-cancel" type="button">Cancel</button>
     <button id="c-ok" class="primary" type="button">Mark all read</button>
   </div>
 </dialog>
 
+<dialog id="options" aria-labelledby="o-title">
+  <div class="bar">
+    <h2 id="o-title">Options</h2>
+    <span class="spacer"></span>
+    <button id="o-close" type="button">Done</button>
+  </div>
+  <div class="opts">
+    <div class="opt"><span id="o-layout">Layout</span>
+      <div class="seg" role="group" aria-labelledby="o-layout" data-pref="compact">
+        <button type="button" data-v="false">Cards</button><button type="button" data-v="true">List</button>
+      </div>
+    </div>
+    <div class="opt"><span id="o-order">Order</span>
+      <div class="seg" role="group" aria-labelledby="o-order" data-pref="order">
+        <button type="button" data-v='"newest"'>Newest first</button><button type="button" data-v='"oldest"'>Oldest first</button>
+      </div>
+    </div>
+    <div class="opt"><span id="o-theme">Theme</span>
+      <div class="seg" role="group" aria-labelledby="o-theme" data-pref="theme">
+        <button type="button" data-v='"auto"'>Auto</button><button type="button" data-v='"light"'>Light</button><button type="button" data-v='"dark"'>Dark</button>
+      </div>
+    </div>
+    <div class="opt"><span id="o-font">Article font</span>
+      <div class="seg" role="group" aria-labelledby="o-font" data-pref="font">
+        <button type="button" data-v='"sans"'>Sans</button><button type="button" data-v='"serif"'>Serif</button>
+      </div>
+    </div>
+    <div class="opt"><span id="o-size">Article text size</span>
+      <div class="seg" role="group" aria-labelledby="o-size" data-pref="size">
+        <button type="button" data-v="0">Small</button><button type="button" data-v="1">Medium</button><button type="button" data-v="2">Large</button>
+      </div>
+    </div>
+    <div class="opt"><span id="o-offline">Save articles for offline</span>
+      <div class="seg" role="group" aria-labelledby="o-offline" data-pref="offlineArticles">
+        <button type="button" data-v="true">On</button><button type="button" data-v="false">Off</button>
+      </div>
+    </div>
+    <p class="keys meta">Keyboard: <kbd>j</kbd> <kbd>k</kbd> move, <kbd>Enter</kbd> open, <kbd>m</kbd> mark read, <kbd>s</kbd> star, <kbd>r</kbd> refresh, <kbd>?</kbd> options.</p>
+  </div>
+</dialog>
+
 <div id="toast" class="toast" role="status" hidden><span id="toast-text"></span><button id="toast-action" type="button"></button></div>
-<script src="/app.js"></script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>
