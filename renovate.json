@@ -1,6 +1,26 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:recommended"
+  "extends": ["config:recommended"],
+  "packageRules": [
+    {
+      "description": "Merge minor and patch updates, and every GitHub Actions update, once the tests and the image build pass.",
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "automerge": true
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "automerge": true
+    },
+    {
+      "description": "A new major Node version changes the runtime the app ships on, so it waits for a person.",
+      "matchPackageNames": ["node"],
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    },
+    {
+      "description": "Keep the image, CI and engines on the same Node major version.",
+      "matchPackageNames": ["node"],
+      "groupName": "Node"
+    }
   ]
 }
