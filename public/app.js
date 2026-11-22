@@ -24,7 +24,11 @@ const state = {
   offline: null, pending: 0,
   // Feeds whose own thumbnails are too small to show; remembered so cards never flash a blurry one.
   lowres: new Set(prefs.get('lowres', [])),
+  markOnScroll: false,
 };
+// Mark read as you scroll: items waiting to be sent, the last few batches (for
+// undo), and items the reader put back to unread, which are never marked again.
+const scrolled = { queue: new Map(), recent: [], kept: new Set(), timer: 0, quiet: 0, waiting: false };
 const CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>';
 const UNDO = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3"/></svg>';
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -248,6 +252,7 @@ function paint(item) {
 
 let countsTimer;
 async function setTag(item, tag, on) {
+  if (tag === 'read' && !on) scrolled.kept.add(item.id);
   const before = item[tag];
   item[tag] = on;
   paint(item);
@@ -272,6 +277,29 @@ async function setTag(item, tag, on) {
     toast(`Couldn’t update that item: ${explain(err)}.`);
     return false;
   }
+}
+
+// Marks several items at once. Without a connection the changes are queued.
+async function tagMany(items, tag, on) {
+  const ids = items.map((i) => i.id);
+  try {
+    for (let i = 0; i < ids.length; i += 500) await api('/api/tag', { ids: ids.slice(i, i + 500), tag, on });
+  } catch (err) {
+    const queued = unreachable(err) && (await Promise.all(ids.map((id) => db.queue({ id, tag, on }))).then(() => true, () => false));
+    if (!queued) {
+      toast(`Couldn’t update ${plural(ids.length, 'item')}: ${explain(err)}.`);
+      return false;
+    }
+    state.pending += ids.length;
+    showBanner();
+    return true;
+  }
+  if (tag === 'read') {
+    clearTimeout(countsTimer);
+    countsTimer = setTimeout(() => loadFeeds().catch(() => {}), 700);
+  }
+  saveListSoon();
+  return true;
 }
 
 // The tick on a card, or a swipe: mark read and clear it out of an unread list.
@@ -299,6 +327,77 @@ async function dismiss(item) {
   if (!ok) return restore();
   toast('Marked as read', 'Undo', async () => { await setTag(item, 'read', false); restore(); });
 }
+
+// ---- Mark read as you scroll ----------------------------------------------
+// Items that scroll up past the header are marked read a few at a time. Their
+// cards stay where they are, only dimmed, so the list never jumps.
+function markCard(item) {
+  const c = cardFor(item);
+  if (!c) return;
+  c.classList.add('passed');
+  c.classList.toggle('read', item.read);
+  const done = c.querySelector('.done');
+  const label = item.read ? 'Mark as unread' : 'Mark as read';
+  done.innerHTML = item.read ? UNDO : CHECK;
+  done.title = label;
+  done.setAttribute('aria-label', `${label}: ${item.title}`);
+}
+
+function findPassed() {
+  scrolled.waiting = false;
+  if (!state.markOnScroll || document.querySelector('dialog[open]')) return;
+  const top = document.querySelector('header').getBoundingClientRect().bottom;
+  for (const c of grid.querySelectorAll('.card[data-id]:not(.read)')) {
+    // Cards are in reading order, so the first one still on screen ends the search.
+    if (c.getBoundingClientRect().bottom > top) break;
+    const item = state.items.get(c.dataset.id);
+    if (item && !item.read && !scrolled.kept.has(item.id)) scrolled.queue.set(item.id, item);
+  }
+  if (scrolled.queue.size && !scrolled.timer) scrolled.timer = setTimeout(sendPassed, 1200);
+}
+
+async function sendPassed() {
+  scrolled.timer = 0;
+  const items = [...scrolled.queue.values()].filter((i) => !i.read && !scrolled.kept.has(i.id));
+  scrolled.queue.clear();
+  if (!items.length) return;
+  for (const item of items) {
+    item.read = true;
+    markCard(item);
+  }
+  if (!(await tagMany(items, 'read', true))) {
+    for (const item of items) {
+      item.read = false;
+      scrolled.kept.add(item.id);
+      markCard(item);
+    }
+    return;
+  }
+  // One undo covers everything marked until the reader stops for a few seconds.
+  clearTimeout(scrolled.quiet);
+  scrolled.recent.push(...items);
+  scrolled.quiet = setTimeout(() => { scrolled.recent = []; }, 10000);
+  const batch = scrolled.recent.slice();
+  toast(`Marked ${plural(batch.length, 'item')} as read`, 'Undo', async () => {
+    scrolled.recent = [];
+    for (const item of batch) {
+      item.read = false;
+      scrolled.kept.add(item.id);
+      markCard(item);
+    }
+    if (await tagMany(batch, 'read', false)) return;
+    for (const item of batch) {
+      item.read = true;
+      markCard(item);
+    }
+  });
+}
+
+addEventListener('scroll', () => {
+  if (!state.markOnScroll || scrolled.waiting) return;
+  scrolled.waiting = true;
+  setTimeout(findPassed, 150);
+}, { passive: true });
 
 // ---- Feeds -----------------------------------------------------------------
 const feedById = (id) => state.feeds.find((f) => f.id === id);
@@ -443,6 +542,65 @@ function reset() {
   });
 }
 
+// ---- Pull to refresh ---------------------------------------------------------
+// Phones have no room for the refresh button and an installed app has no
+// browser pull-to-refresh, so pulling down at the top of the list refreshes it.
+const PULL = 72;
+const ptr = $('ptr');
+let pull = null, refreshing = null;
+
+function refresh() {
+  refreshing ??= (async () => {
+    ptr.classList.add('busy');
+    ptr.style.height = '52px';
+    // Send changes made offline first, so the fresh list includes them.
+    if (state.pending) await flush();
+    showBanner();
+    reset();
+    // Long enough to see that something happened, even on a fast connection.
+    await Promise.all([state.loading, new Promise((r) => setTimeout(r, 450))]);
+  })().finally(() => {
+    ptr.classList.remove('busy');
+    ptr.style.height = '';
+    refreshing = null;
+  });
+  return refreshing;
+}
+
+document.addEventListener('touchstart', (e) => {
+  pull = null;
+  if (e.touches.length !== 1 || scrollY > 0 || refreshing || document.querySelector('dialog[open]')) return;
+  pull = { x: e.touches[0].clientX, y: e.touches[0].clientY, d: 0, live: false };
+}, { passive: true });
+
+document.addEventListener('touchmove', (e) => {
+  if (!pull) return;
+  const t = e.touches[0], dy = t.clientY - pull.y, dx = t.clientX - pull.x;
+  if (!pull.live) {
+    if (Math.abs(dy) < 10 && Math.abs(dx) < 10) return;
+    // Sideways is a card swipe or the feed chips; upwards is an ordinary scroll.
+    if (dy <= 0 || Math.abs(dx) > dy || scrollY > 0) { pull = null; return; }
+    pull.live = true;
+    ptr.classList.add('pulling');
+  }
+  pull.d = Math.max(0, Math.min(PULL * 1.6, dy * 0.5));
+  ptr.style.height = `${pull.d}px`;
+  ptr.classList.toggle('ready', pull.d >= PULL);
+  ptr.firstElementChild.style.transform = `rotate(${Math.round(pull.d * 4)}deg)`;
+}, { passive: true });
+
+function endPull() {
+  const done = pull;
+  pull = null;
+  if (!done?.live) return;
+  ptr.classList.remove('pulling', 'ready');
+  ptr.firstElementChild.style.transform = '';
+  if (done.d >= PULL) refresh();
+  else ptr.style.height = '';
+}
+document.addEventListener('touchend', endPull);
+document.addEventListener('touchcancel', endPull);
+
 // ---- Article ---------------------------------------------------------------
 function render(item, html, leadImage) {
   const body = $('a-body');
@@ -559,12 +717,13 @@ $('a-share').addEventListener('click', () => share(state.open));
 $('a-unread').addEventListener('click', () => { setTag(state.open, 'read', false); dialog.close(); });
 
 // ---- Options ---------------------------------------------------------------
-const DEFAULTS = { compact: false, order: 'newest', theme: 'auto', font: 'sans', size: 0, offlineArticles: true };
+const DEFAULTS = { compact: false, order: 'newest', markOnScroll: false, theme: 'auto', font: 'sans', size: 0, offlineArticles: true };
 const THEME_COLOURS = { light: '#f4f2ee', dark: '#151413' };
 
 function applyOptions() {
   const get = (key) => prefs.get(key, DEFAULTS[key]);
   document.body.classList.toggle('compact', get('compact'));
+  state.markOnScroll = get('markOnScroll');
   dialog.dataset.size = String(get('size'));
   dialog.dataset.font = get('font');
   const theme = get('theme');
@@ -616,7 +775,7 @@ for (const [id, unread] of [['show-unread', true], ['show-all', false]]) {
     reset();
   });
 }
-$('refresh').addEventListener('click', reset);
+$('refresh').addEventListener('click', refresh);
 
 $('mark-all').addEventListener('click', () => {
   const n = unreadIn(state.stream);
@@ -654,7 +813,7 @@ $('c-ok').addEventListener('click', async () => {
 document.addEventListener('keydown', (e) => {
   if (e.altKey || e.ctrlKey || e.metaKey || document.querySelector('dialog[open]')) return;
   if (e.key === '?') return openOptions();
-  if (e.key === 'r') return reset();
+  if (e.key === 'r') return refresh();
   const cards = [...grid.querySelectorAll('.card[data-id]')];
   const at = cards.indexOf(document.activeElement?.closest('.card'));
   if (e.key === 'j' || e.key === 'k') {
