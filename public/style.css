@@ -11,6 +11,8 @@
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+/* The app does its own pull-to-refresh; stop the browser's from reloading the page too. */
+html, body { overscroll-behavior-y: contain; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
 a { color: var(--accent); }
 svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; display: block; }
@@ -51,6 +53,13 @@ h1 { margin: 0; font-size: 1.15rem; flex: 1 1 auto; white-space: nowrap; }
 /* The second row: the feeds inside the chosen category. */
 .chips.sub { padding-top: 0; min-height: 0; margin-top: -4px; }
 .chips.sub .chip { font-size: .82rem; padding: 2px 12px; min-height: 32px; }
+.ptr { height: 0; overflow: hidden; display: grid; place-items: center; color: var(--muted); transition: height .2s; }
+.ptr.pulling { transition: none; }
+.ptr svg { width: 24px; height: 24px; }
+.ptr.ready, .ptr.busy { color: var(--accent); }
+.ptr.busy svg { animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ptr.busy svg { animation: none; } }
 .banner { margin: 0 0 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--muted); font-size: .88rem; }
 
 /* ---- List ---- */
@@ -75,6 +84,8 @@ main { padding: 16px; max-width: 1500px; margin: 0 auto; }
 .card h3 { margin: 0; font-size: 1.02rem; line-height: 1.3; text-wrap: balance; }
 .card p { margin: 0; color: var(--muted); font-size: .9rem; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .card.read h3 { color: var(--muted); font-weight: 500; }
+/* Marked while scrolling: keep the weight so the text does not reflow above the reader. */
+.card.passed h3 { font-weight: bold; }
 .card.read img { opacity: .45; }
 .done {
   position: absolute; top: 10px; right: 10px; width: 40px; height: 40px; min-height: 0; padding: 0; border-radius: 50%;

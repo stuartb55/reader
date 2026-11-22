@@ -42,6 +42,7 @@
   <nav id="feeds" class="chips sub" aria-label="Feeds" hidden></nav>
 </header>
 <main>
+  <div id="ptr" class="ptr" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5"/></svg></div>
   <p id="banner" class="banner" role="status" hidden></p>
   <div id="grid" class="grid"></div>
   <p id="status" class="status" role="status"></p>
@@ -103,6 +104,11 @@
     <div class="opt"><span id="o-order">Order</span>
       <div class="seg" role="group" aria-labelledby="o-order" data-pref="order">
         <button type="button" data-v='"newest"'>Newest first</button><button type="button" data-v='"oldest"'>Oldest first</button>
+      </div>
+    </div>
+    <div class="opt"><span id="o-scroll">Mark read as you scroll</span>
+      <div class="seg" role="group" aria-labelledby="o-scroll" data-pref="markOnScroll">
+        <button type="button" data-v="false">Off</button><button type="button" data-v="true">On</button>
       </div>
     </div>
     <div class="opt"><span id="o-theme">Theme</span>

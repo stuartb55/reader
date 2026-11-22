@@ -12,7 +12,8 @@ changes made without a connection until FreshRSS can be reached again. Installin
 
 - Feeds grouped by FreshRSS category, with unread counts; quiet feeds stay out of the way.
 - Cards or a compact list, newest or oldest first. The view you were in is restored on the next launch.
-- Tick or swipe to mark read, with undo. Star from a card or the article. Share an article's link.
+- Pull down at the top of the list to refresh it.
+- Tick or swipe to mark read, with undo. Optionally, items are marked read as they scroll past (Options, off by default). Star from a card or the article. Share an article's link.
 - Mark all read for everything, a category or a feed, optionally only items that arrived over a
   day or a week ago, with undo.
 - Full article text, a choice of font, text size and light or dark theme. Audio enclosures play in the article.
